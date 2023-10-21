@@ -41,7 +41,7 @@ void pxPlotBezierCubic(const Tex2D texture, vec2 a, vec2 b, vec2 c, vec2 d, cons
 
 int main(const int argc, const char** argv)
 {
-    int width = 80, height = 60;
+    int width = 200, height = 150;
     if (argc > 1) {
         width = atoi(argv[1]);
         height = argc > 2 ? atoi(argv[2]) : width;
@@ -53,15 +53,20 @@ int main(const int argc, const char** argv)
     Tex2D texture = {fb, width, height};
     const size_t size = width * height * sizeof(Px);
     int isinside = 0, clicked = 0, down = 0;
-    size_t i, count, released, selected = 0;
+    size_t i, count, selected = 0, overlay = 1;
     ivec2 mouse = {0};
     vec2 m;
 
     while (spxeRun(texture.pixbuf)) {
         if (spxeKeyPressed(ESCAPE)) {
             break;
-        } else if (spxeKeyPressed(R)) {
+        }
+        
+        if (spxeKeyPressed(R)) {
             vector_clear(&point_vector);
+        }
+        if (spxeKeyPressed(Q)) {
+            overlay = !overlay;
         }
 
         spxeMousePos(&mouse.x, &mouse.y);
@@ -78,9 +83,11 @@ int main(const int argc, const char** argv)
                 texture, points[i], points[i + 1], points[i + 2], points[i + 3], blue
             );
 
-            pxPlotLineSmooth(texture, points[i], points[i + 1], red);
-            pxPlotLineSmooth(texture, points[i + 1], points[i + 2], red);
-            pxPlotLineSmooth(texture, points[i + 2], points[i + 3], red);
+            if (overlay) {
+                pxPlotLineSmooth(texture, points[i], points[i + 1], red);
+                pxPlotLineSmooth(texture, points[i + 1], points[i + 2], red);
+                pxPlotLineSmooth(texture, points[i + 2], points[i + 3], red);
+            }
         }
 
         for (i = 0; i < count; ++i) {
