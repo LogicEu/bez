@@ -15,9 +15,19 @@ struct Spline {
     vec2 p, c[2];
 };
 
+struct Mask {
+    struct vector splines;
+    int isclosed;
+};
+
 static struct Spline pxSplineCreate(vec2 p)
 {
     return (struct Spline) {p, {p, p}};
+}
+
+static struct Mask pxMaskCreate(void)
+{
+    return (struct Mask) {vector_create(sizeof(struct Spline)), 0};
 }
 
 static void pxPlotBezierCubic(
@@ -49,6 +59,16 @@ static void pxPlotBezierCubic(
     pxPlotLineSmooth(texture, p, q, col);
 }
 
+static void pxRotoFree(struct vector* roto)
+{
+    struct Mask* masks = roto->data;
+    const size_t count = roto->size;
+    for (size_t i = 0; i < count; ++i) {
+        vector_free(&masks[i].splines);
+    }
+    vector_free(roto);
+}
+
 int main(const int argc, const char** argv)
 {
     int width = 200, height = 150;
@@ -58,25 +78,29 @@ int main(const int argc, const char** argv)
     }
 
     const Px red = {255, 0, 0, 255}, green = {0, 255, 0, 255}, blue = {0, 0, 255, 255};
-    struct vector splinevec = vector_create(sizeof(struct Spline));
+    struct vector roto = vector_create(sizeof(struct Mask));
     Px* fb = spxeStart("bez", 800, 600, width, height);
     Tex2D texture = {fb, width, height};
     const size_t size = width * height * sizeof(Px);
-    int isinside = 0, clicked = 0, down = 0, overlay = 1, isclosed = 0;
-    int justcreated = 0;
+    int isinside = 0, clicked = 0, down = 0, overlay = 1, justcreated = 0;
     size_t i, count, selected = 0;
     ivec2 mouse = {0};
     vec2 m;
+
+    struct Mask new_mask = pxMaskCreate();
+    struct Mask* mask = vector_push(&roto, &new_mask);
 
     while (spxeRun(texture.pixbuf)) {
         if (spxeKeyPressed(ESCAPE)) {
             break;
         }
         if (spxeKeyPressed(R)) {
-            vector_clear(&splinevec);
+            pxRotoFree(&roto);
+            new_mask = pxMaskCreate();
+            mask = vector_push(&roto, &new_mask);
         }
-        if (spxeKeyPressed(X) || spxeKeyPressed(BACKSPACE)) {
-            vector_pop(&splinevec);
+        if (spxeKeyPressed(BACKSPACE)) {
+            vector_pop(&mask->splines);
         }
         if (spxeKeyPressed(Q)) {
             overlay = !overlay;
@@ -89,33 +113,41 @@ int main(const int argc, const char** argv)
         isinside = mouse.x >= 0 && mouse.x < width && mouse.y >= 0 && mouse.y < height;
         memset(texture.pixbuf, 155, size);
         
-        count = splinevec.size;
-        vec2* points = splinevec.data;
-        struct Spline *splines = splinevec.data;
+        vec2* points = mask->splines.data;
+        struct Spline *splines = mask->splines.data;
+        count = mask->splines.size;
 
-        if (isclosed) {
-            pxPlotBezierCubic(
-                texture, splines[count - 1].p,
-                splines[count - 1].c[1], splines[0].c[0], splines[0].p, blue
-            );
-        }
+        const struct Mask *masks = roto.data;
+        for (size_t n = 0; n < roto.size; ++n) {
+            const struct Spline* rsplines = masks[n].splines.data;
+            const size_t nsplines = masks[n].splines.size;
+            if (masks[n].isclosed) {
+                pxPlotBezierCubic(
+                    texture, rsplines[nsplines - 1].p, rsplines[nsplines - 1].c[1],
+                    rsplines[0].c[0], rsplines[0].p, blue
+                );
+            }
 
-        for (i = 0; i + 1 < count; ++i) {
-            pxPlotBezierCubic(
-                texture, splines[i].p, 
-                splines[i].c[1], splines[i + 1].c[0], splines[i + 1].p, blue
-            );
+            for (i = 0; i + 1 < masks[n].splines.size; ++i) {
+                pxPlotBezierCubic(
+                    texture, rsplines[i].p, 
+                    rsplines[i].c[1], rsplines[i + 1].c[0], rsplines[i + 1].p, blue
+                );
 
-            if (overlay) {
-                pxPlotLineSmooth(texture, splines[i].p, splines[i].c[0], red);
-                pxPlotLineSmooth(texture, splines[i].p, splines[i].c[1], red);
+                if (overlay) {
+                    pxPlotLineSmooth(texture, rsplines[i].p, rsplines[i].c[0], red);
+                    pxPlotLineSmooth(texture, rsplines[i].p, rsplines[i].c[1], red);
+                }
+            }
+
+            if (nsplines && overlay) {
+                pxPlotLineSmooth(texture, rsplines[i].p, rsplines[i].c[0], red);
+                pxPlotLineSmooth(texture, rsplines[i].p, rsplines[i].c[1], red);
             }
         }
 
         if (count && overlay) {
-            pxPlotLineSmooth(texture, splines[i].p, splines[i].c[0], red);
-            pxPlotLineSmooth(texture, splines[i].p, splines[i].c[1], red);
-            count = splinevec.size * 3;
+            count = mask->splines.size * 3;
             for (i = 0; i < count; ++i) {
                 pxPlot(texture, (int)points[i].x, (int)points[i].y, green);
                 if (!selected && down && m.x == points[i].x && m.y == points[i].y) {
@@ -130,8 +162,11 @@ int main(const int argc, const char** argv)
         }
 
         if (isinside) {
-            if (!isclosed && selected == 1 && splinevec.size > 2) {
-               isclosed = 1;
+            if (!mask->isclosed && selected == 1 && mask->splines.size > 2) {
+               mask->isclosed = 1;
+               new_mask = pxMaskCreate();
+               mask = vector_push(&roto, &new_mask);
+               selected = 0;
             } else if (selected) {
                 const size_t index = selected - 1;
                 if (justcreated) {
@@ -156,14 +191,14 @@ int main(const int argc, const char** argv)
                 pxPlot(texture, mouse.x, mouse.y, red);
                 if (clicked) {
                     struct Spline s = pxSplineCreate(m);
-                    vector_push(&splinevec, &s);
+                    vector_push(&mask->splines, &s);
                     justcreated = 1;
                 }
             }
         }
     }
 
-    vector_free(&splinevec);
+    pxRotoFree(&roto);
     return spxeEnd(fb);
 }
 
