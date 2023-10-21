@@ -11,6 +11,10 @@
 #include <stdio.h>
 #include <string.h>
 
+struct Pair {
+    size_t data[2];
+};
+
 struct Spline {
     vec2 p, c[2];
 };
@@ -20,6 +24,12 @@ struct Mask {
     int isclosed;
 };
 
+struct Roto {
+    struct vector masks;
+};
+
+const Px red = {255, 0, 0, 255}, green = {0, 255, 0, 255}, blue = {0, 0, 255, 255};
+
 static struct Spline pxSplineCreate(vec2 p)
 {
     return (struct Spline) {p, {p, p}};
@@ -28,6 +38,40 @@ static struct Spline pxSplineCreate(vec2 p)
 static struct Mask pxMaskCreate(void)
 {
     return (struct Mask) {vector_create(sizeof(struct Spline)), 0};
+}
+
+static struct Spline* pxMaskPush(struct Mask* mask, vec2 p)
+{
+    struct Spline spline = pxSplineCreate(p);
+    return (struct Spline*)vector_push(&mask->splines, &spline);
+}
+
+static void pxMaskFree(struct Mask* mask)
+{
+    vector_free(&mask->splines);
+}
+
+static struct Mask* pxRotoPush(struct Roto* roto)
+{
+    struct Mask mask = pxMaskCreate();
+    return (struct Mask*)vector_push(&roto->masks, &mask);
+}
+
+static struct Roto pxRotoCreate(void)
+{
+    struct Roto roto = {vector_create(sizeof(struct Mask))};
+    pxRotoPush(&roto);
+    return roto;
+}
+
+static void pxRotoFree(struct Roto* roto)
+{
+    struct Mask* masks = roto->masks.data;
+    const size_t count = roto->masks.size;
+    for (size_t i = 0; i < count; ++i) {
+        pxMaskFree(masks + i);
+    }
+    vector_free(&roto->masks);
 }
 
 static void pxPlotBezierCubic(
@@ -59,14 +103,61 @@ static void pxPlotBezierCubic(
     pxPlotLineSmooth(texture, p, q, col);
 }
 
-static void pxRotoFree(struct vector* roto)
+static void pxPlotRotoOverlay(const struct Roto* roto, struct Tex2D texture)
 {
-    struct Mask* masks = roto->data;
-    const size_t count = roto->size;
-    for (size_t i = 0; i < count; ++i) {
-        vector_free(&masks[i].splines);
+    const struct Mask* masks = roto->masks.data;
+    const size_t mcount = roto->masks.size;
+    for (size_t n = 0; n < mcount; ++n) {
+        const size_t scount = masks[n].splines.size;
+        const struct Spline* splines = masks[n].splines.data;
+        for (size_t i = 0; i < scount; ++i) {
+            pxPlotLineSmooth(texture, splines[i].p, splines[i].c[0], red);
+            pxPlotLineSmooth(texture, splines[i].p, splines[i].c[1], red);
+            pxPlot(texture, (int)splines[i].p.x, (int)splines[i].p.y, green);
+            pxPlot(texture, (int)splines[i].c[0].x, (int)splines[i].c[0].y, green);
+            pxPlot(texture, (int)splines[i].c[1].x, (int)splines[i].c[1].y, green);
+        }
     }
-    vector_free(roto);
+}
+
+static struct Pair pxPlotRoto(
+    const struct Roto* roto, struct Tex2D texture, const size_t selected, const vec2 m)
+{
+    struct Pair pair = {selected, 0};
+    struct Mask *masks = roto->masks.data;
+    const size_t mcount = roto->masks.size;
+    const int down = spxeMouseDown(LEFT);
+    for (size_t n = 0; n < mcount; ++n) {
+        const struct Spline* splines = masks[n].splines.data;
+        const size_t scount = masks[n].splines.size;
+        if (masks[n].isclosed) {
+            pxPlotBezierCubic(
+                texture, splines[scount - 1].p, splines[scount - 1].c[1],
+                splines[0].c[0], splines[0].p, blue
+            );
+        }
+
+        for (size_t i = 0; i + 1 < scount; ++i) {
+            pxPlotBezierCubic(
+                texture, splines[i].p, 
+                splines[i].c[1], splines[i + 1].c[0], splines[i + 1].p, blue
+            ); 
+        }
+        
+        if (down) {
+            const size_t pcount = scount * 3;
+            const vec2* points = (vec2*)splines;
+            for (size_t i = 0; i < pcount; ++i) {
+                if (!pair.data[0] && m.x == points[i].x && m.y == points[i].y) {
+                    pair.data[0] = i + 1;
+                    pair.data[1] = n + 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    return pair;
 }
 
 int main(const int argc, const char** argv)
@@ -77,18 +168,15 @@ int main(const int argc, const char** argv)
         height = argc > 2 ? atoi(argv[2]) : width;
     }
 
-    const Px red = {255, 0, 0, 255}, green = {0, 255, 0, 255}, blue = {0, 0, 255, 255};
-    struct vector roto = vector_create(sizeof(struct Mask));
+    struct Roto roto = pxRotoCreate();
+    pxRotoPush(&roto);
     Px* fb = spxeStart("bez", 800, 600, width, height);
     Tex2D texture = {fb, width, height};
     const size_t size = width * height * sizeof(Px);
-    int isinside = 0, clicked = 0, down = 0, overlay = 1, justcreated = 0;
-    size_t i, count, selected = 0;
+    int isinside = 0, clicked = 0, overlay = 1, justcreated = 0;
+    size_t selected = 0, selected_mask = 0;
     ivec2 mouse = {0};
     vec2 m;
-
-    struct Mask new_mask = pxMaskCreate();
-    struct Mask* mask = vector_push(&roto, &new_mask);
 
     while (spxeRun(texture.pixbuf)) {
         if (spxeKeyPressed(ESCAPE)) {
@@ -96,79 +184,52 @@ int main(const int argc, const char** argv)
         }
         if (spxeKeyPressed(R)) {
             pxRotoFree(&roto);
-            new_mask = pxMaskCreate();
-            mask = vector_push(&roto, &new_mask);
+            pxRotoPush(&roto);
         }
         if (spxeKeyPressed(BACKSPACE)) {
-            vector_pop(&mask->splines);
+            struct Mask* m = vector_peek(&roto.masks);
+            vector_pop(&m->splines);
+        }
+        if (spxeKeyPressed(X)) {
+            struct Mask* m = vector_pop(&roto.masks);
+            pxMaskFree(m);
+            if (!roto.masks.size) {
+                pxRotoPush(&roto);
+            }
         }
         if (spxeKeyPressed(Q)) {
             overlay = !overlay;
         }
-
-        spxeMousePos(&mouse.x, &mouse.y);
-        m = vec2_from_ivec2(mouse);
-        clicked = spxeMousePressed(LEFT);
-        down = spxeMouseDown(LEFT);
-        isinside = mouse.x >= 0 && mouse.x < width && mouse.y >= 0 && mouse.y < height;
-        memset(texture.pixbuf, 155, size);
-        
-        vec2* points = mask->splines.data;
-        struct Spline *splines = mask->splines.data;
-        count = mask->splines.size;
-
-        const struct Mask *masks = roto.data;
-        for (size_t n = 0; n < roto.size; ++n) {
-            const struct Spline* rsplines = masks[n].splines.data;
-            const size_t nsplines = masks[n].splines.size;
-            if (masks[n].isclosed) {
-                pxPlotBezierCubic(
-                    texture, rsplines[nsplines - 1].p, rsplines[nsplines - 1].c[1],
-                    rsplines[0].c[0], rsplines[0].p, blue
-                );
-            }
-
-            for (i = 0; i + 1 < masks[n].splines.size; ++i) {
-                pxPlotBezierCubic(
-                    texture, rsplines[i].p, 
-                    rsplines[i].c[1], rsplines[i + 1].c[0], rsplines[i + 1].p, blue
-                );
-
-                if (overlay) {
-                    pxPlotLineSmooth(texture, rsplines[i].p, rsplines[i].c[0], red);
-                    pxPlotLineSmooth(texture, rsplines[i].p, rsplines[i].c[1], red);
-                }
-            }
-
-            if (nsplines && overlay) {
-                pxPlotLineSmooth(texture, rsplines[i].p, rsplines[i].c[0], red);
-                pxPlotLineSmooth(texture, rsplines[i].p, rsplines[i].c[1], red);
-            }
-        }
-
-        if (count && overlay) {
-            count = mask->splines.size * 3;
-            for (i = 0; i < count; ++i) {
-                pxPlot(texture, (int)points[i].x, (int)points[i].y, green);
-                if (!selected && down && m.x == points[i].x && m.y == points[i].y) {
-                    selected = i + 1;
-                }
-            }
-        }
-
         if (spxeMouseReleased(LEFT)) {
             selected = 0;
             justcreated = 0;
         }
 
+
+        spxeMousePos(&mouse.x, &mouse.y);
+        m = vec2_from_ivec2(mouse);
+        clicked = spxeMousePressed(LEFT);
+        isinside = mouse.x >= 0 && mouse.x < width && mouse.y >= 0 && mouse.y < height;
+        memset(texture.pixbuf, 155, size);
+ 
+        struct Pair pair = pxPlotRoto(&roto, texture, selected, m);
+        if (overlay) {
+            pxPlotRotoOverlay(&roto, texture);
+        }
+
+        selected = pair.data[0];
+        selected_mask = pair.data[1] ? pair.data[1] - 1 : selected_mask;
+
         if (isinside) {
+            struct Mask* mask = vector_index(&roto.masks, selected_mask);
+            vec2* points = mask->splines.data;
             if (!mask->isclosed && selected == 1 && mask->splines.size > 2) {
-               mask->isclosed = 1;
-               new_mask = pxMaskCreate();
-               mask = vector_push(&roto, &new_mask);
-               selected = 0;
-            } else if (selected) {
-                const size_t index = selected - 1;
+                mask->isclosed = 1;
+                pxRotoPush(&roto);
+                selected = 0;
+                ++selected_mask;
+            } else if (selected && points) {
+                size_t index = selected - 1 + (!justcreated && spxeKeyDown(Z));
                 if (justcreated) {
                     vec2 d = vec2_sub(m, points[index]);
                     points[index + 1] = vec2_sub(points[index], d);
@@ -180,6 +241,8 @@ int main(const int argc, const char** argv)
                     points[index + 1].y += d.y;
                     points[index + 2].x += d.x;
                     points[index + 2].y += d.y;
+                }  else if (spxeKeyDown(LEFT_CONTROL)) {
+                    points[index] = m;
                 } else {
                     const int couple = (index + 1) % 3 == 0 ? -1 : 1;
                     const int anchor = couple == 1 ? -1 : -2;
@@ -190,9 +253,11 @@ int main(const int argc, const char** argv)
             } else {
                 pxPlot(texture, mouse.x, mouse.y, red);
                 if (clicked) {
-                    struct Spline s = pxSplineCreate(m);
-                    vector_push(&mask->splines, &s);
+                    pxMaskPush(vector_peek(&roto.masks), m);
                     justcreated = 1;
+                }
+                if (spxeMousePressed(RIGHT)) {
+                    
                 }
             }
         }
