@@ -27,11 +27,6 @@ struct Roto {
 
 const Px red = {255, 0, 0, 255}, green = {0, 255, 0, 255}, blue = {0, 0, 255, 255};
 
-static vec2 vec2_floor(vec2 p)
-{
-    return (vec2){round(p.x), round(p.y)};
-}
-
 static struct Spline pxSplineCreate(vec2 p)
 {
     return (struct Spline) {p, {p, p}};
@@ -42,28 +37,20 @@ static struct Mask pxMaskCreate(void)
     return (struct Mask) {vector_create(sizeof(struct Spline)), 0};
 }
 
+static void pxMaskFree(struct Mask* mask)
+{
+    vector_free(&mask->splines);
+}
+
 static struct Spline* pxMaskPush(struct Mask* mask, vec2 p)
 {
     struct Spline spline = pxSplineCreate(p);
     return (struct Spline*)vector_push(&mask->splines, &spline);
 }
 
-static void pxMaskFree(struct Mask* mask)
-{
-    vector_free(&mask->splines);
-}
-
-static struct Mask* pxRotoPush(struct Roto* roto)
-{
-    struct Mask mask = pxMaskCreate();
-    return (struct Mask*)vector_push(&roto->masks, &mask);
-}
-
 static struct Roto pxRotoCreate(void)
 {
-    struct Roto roto = {vector_create(sizeof(struct Mask)), 0, 0, 0};
-    pxRotoPush(&roto);
-    return roto;
+    return (struct Roto){vector_create(sizeof(struct Mask)), 0, 0, 0};
 }
 
 static void pxRotoFree(struct Roto* roto)
@@ -76,36 +63,58 @@ static void pxRotoFree(struct Roto* roto)
     vector_free(&roto->masks);
 }
 
-static void pxPlotBezierCubic(
-    const Tex2D texture, vec2 a, vec2 b, vec2 c, vec2 d, const Px col)
+static struct Mask* pxRotoPush(struct Roto* roto)
 {
-    float t;
-    vec2 q, p = a;
-    const float dx = pxAbs(d.x - a.x), dy = pxAbs(d.y - a.y);
-    const float dxy = dx + dy;
-    const float delta = dxy != 0.0F ? 4.0F / dxy : 1.0F;
-    
-    for (t = delta; t < 1.0F; t += delta) { 
-        float u = 1.0F - t;
-        float tt = t * t;
-        float uu = u * u;
-        float uuu = uu * u;
-        float ttt = tt * t;
-        float uut = 3.0F * uu * t;
-        float utt = 3.0F * u * tt;
-        
-        q.x = uuu * a.x + uut * b.x + utt * c.x + ttt * d.x;
-        q.y = uuu * a.y + uut * b.y + utt * c.y + ttt * d.y;
+    struct Mask mask = pxMaskCreate();
+    return (struct Mask*)vector_push(&roto->masks, &mask);
+}
 
-        //pxPlotLine(texture, ivec2_from_vec2(p), ivec2_from_vec2(q), col);
-        vec2 n = vec2_floor(p);
-        vec2 m = vec2_floor(q);
-        pxPlotLineSmooth(texture, n, m, col);
-        p = q;
+static struct Spline* pxRotoPushSpline(struct Roto* roto, vec2 p)
+{
+    struct Mask* mask = vector_peek(&roto->masks);
+    if (!mask || mask->isclosed) {
+        mask = pxRotoPush(roto);
     }
-    
-    q = d;
-    pxPlotLineSmooth(texture, p, q, col);
+
+    struct Spline* spline = pxMaskPush(mask, p);
+    roto->selected_mask = roto->masks.size - 1;
+    roto->selected_point = (mask->splines.size - 1) * 3 + 1;
+    roto->justcreated = 1;
+    return spline;
+}
+
+static struct Spline* pxRotoPushSplineNearest(struct Roto* roto, vec2 p)
+{
+    const size_t mcount = roto->masks.size;
+    if (!mcount) {
+        return pxRotoPushSpline(roto, p);
+    }
+
+    float min = 9999999.9F;
+    size_t minspline = 0, minmask = 0;
+    struct Spline spline = pxSplineCreate(p);
+    struct Mask* masks = roto->masks.data;
+    for (size_t n = 0; n < mcount; ++n) {
+        const size_t scount = masks[n].splines.size, notclosed = !masks[n].isclosed;
+        struct Spline* splines = masks[n].splines.data;
+        for (size_t i = 0; i + notclosed < scount; ++i) {
+            const size_t j = (i + 1) % scount; 
+            float d1 = vec2_sqmag(vec2_sub(splines[i].p, p));
+            float d2 = vec2_sqmag(vec2_sub(splines[j].p, p));
+            float d = d1 + d2;
+            if (d < min) {
+                min = d;
+                minspline = i;
+                minmask = n;
+            }
+        }
+    }
+
+    minspline = (minspline + 1) % masks[minmask].splines.size;
+    roto->selected_mask = minmask;
+    roto->selected_point = minspline * 3 + 1;
+    roto->justcreated = 1;
+    return (struct Spline*)vector_push_at(&masks[minmask].splines, &spline, minspline);
 }
 
 static void pxPlotRotoOverlay(const struct Roto* roto, struct Tex2D texture)
@@ -133,14 +142,14 @@ static void pxPlotRoto(const struct Roto* roto, struct Tex2D texture)
         const struct Spline* splines = masks[n].splines.data;
         const size_t scount = masks[n].splines.size;
         if (masks[n].isclosed) {
-            pxPlotBezierCubic(
+            pxPlotBezier3(
                 texture, splines[scount - 1].p, splines[scount - 1].c[1],
                 splines[0].c[0], splines[0].p, blue
             );
         }
 
         for (size_t i = 0; i + 1 < scount; ++i) {
-            pxPlotBezierCubic(
+            pxPlotBezier3(
                 texture, splines[i].p, 
                 splines[i].c[1], splines[i + 1].c[0], splines[i + 1].p, blue
             ); 
@@ -177,7 +186,12 @@ static void pxRotoInput(struct Roto* roto, const vec2 mouse)
     }
     if (spxeKeyPressed(X)) {
         struct Mask* m = vector_pop(&roto->masks);
+        size_t scount = m->splines.size;
         pxMaskFree(m);
+        if (!scount && roto->masks.size > 1) {
+            m = vector_pop(&roto->masks);
+            pxMaskFree(m);
+        }
         if (!roto->masks.size) {
             pxRotoPush(roto);
         }
@@ -193,15 +207,15 @@ static void pxRotoInput(struct Roto* roto, const vec2 mouse)
 
 static void pxRotoEdit(struct Roto* roto, const vec2 m)
 {
+    const int cntrl = spxeKeyDown(LEFT_CONTROL);
+    const int pressed = spxeMousePressed(LEFT);
     struct Mask* mask = vector_index(&roto->masks, roto->selected_mask);
-    vec2* points = mask->splines.data;
-    if (!mask->isclosed && roto->selected_point == 1 && mask->splines.size > 2) {
+    if (mask && !mask->isclosed && mask->splines.size > 1 && roto->selected_point == 1) {
         mask->isclosed = 1;
-        pxRotoPush(roto);
         roto->selected_point = 0;
-        roto->selected_mask++;
-    } else if (roto->selected_point && points) {
-        size_t index = roto->selected_point - 1; 
+    } else if (mask && mask->splines.size && roto->selected_point) {
+        vec2* points = mask->splines.data;
+        size_t index = roto->selected_point - 1;
         index += (index % 3 == 0) && !roto->justcreated && spxeKeyDown(Z);
         if (roto->justcreated) {
             vec2 d = vec2_sub(m, points[index]);
@@ -210,26 +224,31 @@ static void pxRotoEdit(struct Roto* roto, const vec2 m)
         } else if (index % 3 == 0) {
             vec2 d = vec2_sub(m, points[index]);
             points[index] = m;
-            points[index + 1].x += d.x;
-            points[index + 1].y += d.y;
-            points[index + 2].x += d.x;
-            points[index + 2].y += d.y;
-        }  else if (spxeKeyDown(LEFT_CONTROL)) {
+            vec2_add_inline(points[index + 1], d);
+            vec2_add_inline(points[index + 2], d);
+            if (spxeKeyPressed(C)) {
+                vector_remove(&mask->splines, index / 3);
+                roto->selected_point = 0;
+            }
+        }  else if (cntrl) {
             points[index] = m;
         } else {
             const int couple = (index + 1) % 3 == 0 ? -1 : 1;
             const int anchor = couple == 1 ? -1 : -2;
-            vec2 d = vec2_sub(points[index], points[index + anchor]);
-            points[index] = m;
-            points[index + couple] = vec2_sub(points[index + anchor], d);
+            if (spxeKeyPressed(C)) {
+                points[index] = points[index + anchor];
+                roto->selected_point = 0;
+            } else {
+                vec2 d = vec2_sub(points[index], points[index + anchor]);
+                points[index] = m;
+                points[index + couple] = vec2_sub(points[index + anchor], d);
+            }
         }
-    } else {
-        if (spxeMousePressed(LEFT)) {
-            mask = vector_peek(&roto->masks);
-            pxMaskPush(mask, m);
-            roto->selected_mask = mask - (struct Mask*)roto->masks.data;
-            roto->selected_point = (mask->splines.size - 1) * 3 + 1;
-            roto->justcreated = 1;
+    } else if (pressed) {
+        if (cntrl) {
+            pxRotoPushSplineNearest(roto, m);
+        } else {
+            pxRotoPushSpline(roto, m);
         }
     }
 }
@@ -242,7 +261,7 @@ static void pxRotoUpdate(struct Roto* roto, const vec2 mouse)
 
 int main(const int argc, const char** argv)
 {
-    int width = 200, height = 150, overlay = 1;
+    int width = 200, height = 150, overlay = 1, active = 1;
     if (argc > 1) {
         width = atoi(argv[1]);
         height = argc > 2 ? atoi(argv[2]) : width;
@@ -262,12 +281,17 @@ int main(const int argc, const char** argv)
         if (spxeKeyPressed(Q)) {
             overlay = !overlay;
         }
+        if (spxeKeyPressed(D)) {
+            active = !active;
+        }
 
-        pxRotoUpdate(&roto, vec2_from_ivec2(mouse));
+        if (active) {
+            pxRotoUpdate(&roto, vec2_from_ivec2(mouse));
+        }
 
         memset(texture.pixbuf, 155, size);
         pxPlotRoto(&roto, texture);
-        if (overlay) {
+        if (overlay && active) {
             pxPlotRotoOverlay(&roto, texture);
         }
         
