@@ -6,14 +6,9 @@
 #include <spxe.h>
 #include <spxmath.h>
 #include <spxplot.h>
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-
-struct Pair {
-    size_t data[2];
-};
 
 struct Spline {
     vec2 p, c[2];
@@ -26,9 +21,16 @@ struct Mask {
 
 struct Roto {
     struct vector masks;
+    size_t selected_point, selected_mask;
+    int justcreated;
 };
 
 const Px red = {255, 0, 0, 255}, green = {0, 255, 0, 255}, blue = {0, 0, 255, 255};
+
+static vec2 vec2_floor(vec2 p)
+{
+    return (vec2){round(p.x), round(p.y)};
+}
 
 static struct Spline pxSplineCreate(vec2 p)
 {
@@ -59,7 +61,7 @@ static struct Mask* pxRotoPush(struct Roto* roto)
 
 static struct Roto pxRotoCreate(void)
 {
-    struct Roto roto = {vector_create(sizeof(struct Mask))};
+    struct Roto roto = {vector_create(sizeof(struct Mask)), 0, 0, 0};
     pxRotoPush(&roto);
     return roto;
 }
@@ -81,7 +83,7 @@ static void pxPlotBezierCubic(
     vec2 q, p = a;
     const float dx = pxAbs(d.x - a.x), dy = pxAbs(d.y - a.y);
     const float dxy = dx + dy;
-    const float delta = dxy != 0.0F ? 1.0F / dxy : 1.0F;
+    const float delta = dxy != 0.0F ? 4.0F / dxy : 1.0F;
     
     for (t = delta; t < 1.0F; t += delta) { 
         float u = 1.0F - t;
@@ -95,7 +97,10 @@ static void pxPlotBezierCubic(
         q.x = uuu * a.x + uut * b.x + utt * c.x + ttt * d.x;
         q.y = uuu * a.y + uut * b.y + utt * c.y + ttt * d.y;
 
-        pxPlotLine(texture, ivec2_from_vec2(p), ivec2_from_vec2(q), col);
+        //pxPlotLine(texture, ivec2_from_vec2(p), ivec2_from_vec2(q), col);
+        vec2 n = vec2_floor(p);
+        vec2 m = vec2_floor(q);
+        pxPlotLineSmooth(texture, n, m, col);
         p = q;
     }
     
@@ -120,13 +125,10 @@ static void pxPlotRotoOverlay(const struct Roto* roto, struct Tex2D texture)
     }
 }
 
-static struct Pair pxPlotRoto(
-    const struct Roto* roto, struct Tex2D texture, const size_t selected, const vec2 m)
+static void pxPlotRoto(const struct Roto* roto, struct Tex2D texture)
 {
-    struct Pair pair = {selected, 0};
     struct Mask *masks = roto->masks.data;
     const size_t mcount = roto->masks.size;
-    const int down = spxeMouseDown(LEFT);
     for (size_t n = 0; n < mcount; ++n) {
         const struct Spline* splines = masks[n].splines.data;
         const size_t scount = masks[n].splines.size;
@@ -142,124 +144,135 @@ static struct Pair pxPlotRoto(
                 texture, splines[i].p, 
                 splines[i].c[1], splines[i + 1].c[0], splines[i + 1].p, blue
             ); 
-        }
-        
-        if (down) {
-            const size_t pcount = scount * 3;
-            const vec2* points = (vec2*)splines;
-            for (size_t i = 0; i < pcount; ++i) {
-                if (!pair.data[0] && m.x == points[i].x && m.y == points[i].y) {
-                    pair.data[0] = i + 1;
-                    pair.data[1] = n + 1;
-                    break;
-                }
+        } 
+    }
+}
+
+static void pxRotoSelect(struct Roto* roto, const vec2 m)
+{
+    const struct Mask *masks = roto->masks.data;
+    const size_t mcount = roto->masks.size;
+    for (size_t n = 0; n < mcount && !roto->selected_point; ++n) {
+        const vec2* points = masks[n].splines.data;
+        const size_t pcount = masks[n].splines.size * 3;
+        for (size_t i = 0; i < pcount; ++i) {
+            if (!roto->selected_point && m.x == points[i].x && m.y == points[i].y) {
+                roto->selected_point = i + 1;
+                roto->selected_mask = n;
+                break;
             }
         }
     }
+}
 
-    return pair;
+static void pxRotoInput(struct Roto* roto, const vec2 mouse)
+{
+    if (spxeKeyPressed(R)) {
+        pxRotoFree(roto);
+        pxRotoPush(roto);
+    }
+    if (spxeKeyPressed(BACKSPACE)) {
+        struct Mask* m = vector_peek(&roto->masks);
+        vector_pop(&m->splines);
+    }
+    if (spxeKeyPressed(X)) {
+        struct Mask* m = vector_pop(&roto->masks);
+        pxMaskFree(m);
+        if (!roto->masks.size) {
+            pxRotoPush(roto);
+        }
+    }
+
+    if (spxeMouseDown(LEFT)) {
+        pxRotoSelect(roto, mouse);
+    } else {
+        roto->selected_point = 0;
+        roto->justcreated = 0;
+    }
+}
+
+static void pxRotoEdit(struct Roto* roto, const vec2 m)
+{
+    struct Mask* mask = vector_index(&roto->masks, roto->selected_mask);
+    vec2* points = mask->splines.data;
+    if (!mask->isclosed && roto->selected_point == 1 && mask->splines.size > 2) {
+        mask->isclosed = 1;
+        pxRotoPush(roto);
+        roto->selected_point = 0;
+        roto->selected_mask++;
+    } else if (roto->selected_point && points) {
+        size_t index = roto->selected_point - 1; 
+        index += (index % 3 == 0) && !roto->justcreated && spxeKeyDown(Z);
+        if (roto->justcreated) {
+            vec2 d = vec2_sub(m, points[index]);
+            points[index + 1] = vec2_sub(points[index], d);
+            points[index + 2] = m;
+        } else if (index % 3 == 0) {
+            vec2 d = vec2_sub(m, points[index]);
+            points[index] = m;
+            points[index + 1].x += d.x;
+            points[index + 1].y += d.y;
+            points[index + 2].x += d.x;
+            points[index + 2].y += d.y;
+        }  else if (spxeKeyDown(LEFT_CONTROL)) {
+            points[index] = m;
+        } else {
+            const int couple = (index + 1) % 3 == 0 ? -1 : 1;
+            const int anchor = couple == 1 ? -1 : -2;
+            vec2 d = vec2_sub(points[index], points[index + anchor]);
+            points[index] = m;
+            points[index + couple] = vec2_sub(points[index + anchor], d);
+        }
+    } else {
+        if (spxeMousePressed(LEFT)) {
+            mask = vector_peek(&roto->masks);
+            pxMaskPush(mask, m);
+            roto->selected_mask = mask - (struct Mask*)roto->masks.data;
+            roto->selected_point = (mask->splines.size - 1) * 3 + 1;
+            roto->justcreated = 1;
+        }
+    }
+}
+
+static void pxRotoUpdate(struct Roto* roto, const vec2 mouse)
+{
+    pxRotoInput(roto, mouse);
+    pxRotoEdit(roto, mouse);
 }
 
 int main(const int argc, const char** argv)
 {
-    int width = 200, height = 150;
+    int width = 200, height = 150, overlay = 1;
     if (argc > 1) {
         width = atoi(argv[1]);
         height = argc > 2 ? atoi(argv[2]) : width;
     }
 
     struct Roto roto = pxRotoCreate();
-    pxRotoPush(&roto);
     Px* fb = spxeStart("bez", 800, 600, width, height);
     Tex2D texture = {fb, width, height};
     const size_t size = width * height * sizeof(Px);
-    int isinside = 0, clicked = 0, overlay = 1, justcreated = 0;
-    size_t selected = 0, selected_mask = 0;
-    ivec2 mouse = {0};
-    vec2 m;
+    ivec2 mouse;
 
     while (spxeRun(texture.pixbuf)) {
+        spxeMousePos(&mouse.x, &mouse.y);
         if (spxeKeyPressed(ESCAPE)) {
             break;
-        }
-        if (spxeKeyPressed(R)) {
-            pxRotoFree(&roto);
-            pxRotoPush(&roto);
-        }
-        if (spxeKeyPressed(BACKSPACE)) {
-            struct Mask* m = vector_peek(&roto.masks);
-            vector_pop(&m->splines);
-        }
-        if (spxeKeyPressed(X)) {
-            struct Mask* m = vector_pop(&roto.masks);
-            pxMaskFree(m);
-            if (!roto.masks.size) {
-                pxRotoPush(&roto);
-            }
         }
         if (spxeKeyPressed(Q)) {
             overlay = !overlay;
         }
-        if (spxeMouseReleased(LEFT)) {
-            selected = 0;
-            justcreated = 0;
-        }
 
+        pxRotoUpdate(&roto, vec2_from_ivec2(mouse));
 
-        spxeMousePos(&mouse.x, &mouse.y);
-        m = vec2_from_ivec2(mouse);
-        clicked = spxeMousePressed(LEFT);
-        isinside = mouse.x >= 0 && mouse.x < width && mouse.y >= 0 && mouse.y < height;
         memset(texture.pixbuf, 155, size);
- 
-        struct Pair pair = pxPlotRoto(&roto, texture, selected, m);
+        pxPlotRoto(&roto, texture);
         if (overlay) {
             pxPlotRotoOverlay(&roto, texture);
         }
-
-        selected = pair.data[0];
-        selected_mask = pair.data[1] ? pair.data[1] - 1 : selected_mask;
-
-        if (isinside) {
-            struct Mask* mask = vector_index(&roto.masks, selected_mask);
-            vec2* points = mask->splines.data;
-            if (!mask->isclosed && selected == 1 && mask->splines.size > 2) {
-                mask->isclosed = 1;
-                pxRotoPush(&roto);
-                selected = 0;
-                ++selected_mask;
-            } else if (selected && points) {
-                size_t index = selected - 1 + (!justcreated && spxeKeyDown(Z));
-                if (justcreated) {
-                    vec2 d = vec2_sub(m, points[index]);
-                    points[index + 1] = vec2_sub(points[index], d);
-                    points[index + 2] = m;
-                } else if (index % 3 == 0) {
-                    vec2 d = vec2_sub(m, points[index]);
-                    points[index] = m;
-                    points[index + 1].x += d.x;
-                    points[index + 1].y += d.y;
-                    points[index + 2].x += d.x;
-                    points[index + 2].y += d.y;
-                }  else if (spxeKeyDown(LEFT_CONTROL)) {
-                    points[index] = m;
-                } else {
-                    const int couple = (index + 1) % 3 == 0 ? -1 : 1;
-                    const int anchor = couple == 1 ? -1 : -2;
-                    vec2 d = vec2_sub(points[index], points[index + anchor]);
-                    points[index] = m;
-                    points[index + couple] = vec2_sub(points[index + anchor], d);
-                }
-            } else {
-                pxPlot(texture, mouse.x, mouse.y, red);
-                if (clicked) {
-                    pxMaskPush(vector_peek(&roto.masks), m);
-                    justcreated = 1;
-                }
-                if (spxeMousePressed(RIGHT)) {
-                    
-                }
-            }
+        
+        if (pxInside(texture, mouse.x, mouse.y)) {
+            pxPlot(texture, mouse.x, mouse.y, red);
         }
     }
 
