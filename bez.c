@@ -50,7 +50,7 @@ struct Mask {
 struct Roto {
     struct vector masks;
     size_t selected_point, selected_mask;
-    int justcreated;
+    int justcreated, overlay, isactive;
 };
 
 const Px red = {255, 0, 0, 255}, green = {0, 255, 0, 255}, blue = {0, 0, 255, 255};
@@ -78,7 +78,7 @@ static struct Spline* pxMaskPush(struct Mask* mask, vec2 p)
 
 static struct Roto pxRotoCreate(void)
 {
-    return (struct Roto){vector_create(sizeof(struct Mask)), 0, 0, 0};
+    return (struct Roto){vector_create(sizeof(struct Mask)), 0, 0, 0, 1, 1};
 }
 
 static void pxRotoFree(struct Roto* roto)
@@ -145,7 +145,7 @@ static struct Spline* pxRotoPushSplineNearest(struct Roto* roto, vec2 p)
     return (struct Spline*)vector_push_at(&masks[minmask].splines, &spline, minspline);
 }
 
-static void pxPlotRotoOverlay(const struct Roto* roto, struct Tex2D texture)
+static void pxPlotRotoOverlay(const struct Roto* roto, const struct Tex2D texture)
 {
     const struct Mask* masks = roto->masks.data;
     const size_t mcount = roto->masks.size;
@@ -162,7 +162,7 @@ static void pxPlotRotoOverlay(const struct Roto* roto, struct Tex2D texture)
     }
 }
 
-static void pxPlotRoto(const struct Roto* roto, struct Tex2D texture)
+static void pxPlotRoto(const struct Roto* roto, const struct Tex2D texture)
 {
     struct Mask *masks = roto->masks.data;
     const size_t mcount = roto->masks.size;
@@ -208,6 +208,10 @@ static void pxRotoInput(struct Roto* roto, const vec2 mouse)
         pxRotoFree(roto);
         pxRotoPush(roto);
     }
+    if (spxeKeyPressed(Q)) {
+        roto->overlay = !roto->overlay;
+    }
+
     if (spxeKeyPressed(BACKSPACE)) {
         struct Mask* m = vector_peek(&roto->masks);
         vector_pop(&m->splines);
@@ -281,15 +285,25 @@ static void pxRotoEdit(struct Roto* roto, const vec2 m)
     }
 }
 
-static void pxRotoUpdate(struct Roto* roto, const vec2 mouse)
-{
-    pxRotoInput(roto, mouse);
-    pxRotoEdit(roto, mouse);
+static void pxRotoUpdate(struct Roto* roto, const Tex2D texture, const vec2 mouse)
+{ 
+    if (spxeKeyPressed(D)) {
+        roto->isactive = !roto->isactive;
+    }
+
+    if (roto->isactive) {
+        pxRotoInput(roto, mouse);
+        pxRotoEdit(roto, mouse); 
+        pxPlotRoto(roto, texture);
+        if (roto->overlay) {
+            pxPlotRotoOverlay(roto, texture);
+        }
+    }
 }
 
 int main(const int argc, const char** argv)
 {
-    int width = 200, height = 150, overlay = 1, active = 1;
+    int width = 200, height = 150;
     if (argc > 1) {
         width = atoi(argv[1]);
         height = argc > 2 ? atoi(argv[2]) : width;
@@ -306,23 +320,9 @@ int main(const int argc, const char** argv)
         if (spxeKeyPressed(ESCAPE)) {
             break;
         }
-        if (spxeKeyPressed(Q)) {
-            overlay = !overlay;
-        }
-        if (spxeKeyPressed(D)) {
-            active = !active;
-        }
-
-        if (active) {
-            pxRotoUpdate(&roto, vec2_from_ivec2(mouse));
-        }
 
         memset(texture.pixbuf, 155, size);
-        pxPlotRoto(&roto, texture);
-        if (overlay && active) {
-            pxPlotRotoOverlay(&roto, texture);
-        }
-        
+        pxRotoUpdate(&roto, texture, vec2_from_ivec2(mouse));
         if (pxInside(texture, mouse.x, mouse.y)) {
             pxPlot(texture, mouse.x, mouse.y, red);
         }
