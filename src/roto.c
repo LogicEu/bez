@@ -26,34 +26,14 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ************************* bez ***************************/
 
-#define UTOPIA_IMPLEMENTATION
-#define SPXE_APPLICATION
-#define SPXP_APPLICATION
-#define SPXM_APPLICATION
-#include <vector.h>
-#include <spxe.h>
-#include <spxmath.h>
-#include <spxplot.h>
+#include <roto.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
-struct Spline {
-    vec2 p, c[2];
-};
-
-struct Mask {
-    struct vector splines;
-    int isclosed;
-};
-
-struct Roto {
-    struct vector masks;
-    size_t selected_point, selected_mask;
-    int justcreated, overlay, isactive;
-};
-
-const Px red = {255, 0, 0, 255}, green = {0, 255, 0, 255}, blue = {0, 0, 255, 255};
+static const Px red = {255, 0, 0, 255};
+static const Px green = {0, 255, 0, 255};
+static const Px blue = {0, 0, 255, 255};
 
 static struct Spline pxSplineCreate(vec2 p)
 {
@@ -76,12 +56,12 @@ static struct Spline* pxMaskPush(struct Mask* mask, vec2 p)
     return (struct Spline*)vector_push(&mask->splines, &spline);
 }
 
-static struct Roto pxRotoCreate(void)
+struct Roto pxRotoCreate(void)
 {
     return (struct Roto){vector_create(sizeof(struct Mask)), 0, 0, 0, 1, 1};
 }
 
-static void pxRotoFree(struct Roto* roto)
+void pxRotoFree(struct Roto* roto)
 {
     struct Mask* masks = roto->masks.data;
     const size_t count = roto->masks.size;
@@ -204,19 +184,19 @@ static void pxRotoSelect(struct Roto* roto, const vec2 m)
 
 static void pxRotoInput(struct Roto* roto, const vec2 mouse)
 {
-    if (spxeKeyPressed(R)) {
+    if (spxeKeyPressed(KEY_R)) {
         pxRotoFree(roto);
         pxRotoPush(roto);
     }
-    if (spxeKeyPressed(Q)) {
+    if (spxeKeyPressed(KEY_Q)) {
         roto->overlay = !roto->overlay;
     }
 
-    if (spxeKeyPressed(BACKSPACE)) {
+    if (spxeKeyPressed(KEY_BACKSPACE)) {
         struct Mask* m = vector_peek(&roto->masks);
         vector_pop(&m->splines);
     }
-    if (spxeKeyPressed(X)) {
+    if (spxeKeyPressed(KEY_X)) {
         struct Mask* m = vector_pop(&roto->masks);
         size_t scount = m->splines.size;
         pxMaskFree(m);
@@ -229,7 +209,7 @@ static void pxRotoInput(struct Roto* roto, const vec2 mouse)
         }
     }
 
-    if (spxeMouseDown(LEFT)) {
+    if (spxeMouseDown(MOUSE_LEFT)) {
         pxRotoSelect(roto, mouse);
     } else {
         roto->selected_point = 0;
@@ -239,8 +219,8 @@ static void pxRotoInput(struct Roto* roto, const vec2 mouse)
 
 static void pxRotoEdit(struct Roto* roto, const vec2 m)
 {
-    const int cntrl = spxeKeyDown(LEFT_CONTROL);
-    const int pressed = spxeMousePressed(LEFT);
+    const int cntrl = spxeKeyDown(KEY_LEFT_CONTROL);
+    const int pressed = spxeMousePressed(MOUSE_LEFT);
     struct Mask* mask = vector_index(&roto->masks, roto->selected_mask);
     if (mask && !mask->isclosed && mask->splines.size > 1 && roto->selected_point == 1) {
         mask->isclosed = 1;
@@ -248,7 +228,7 @@ static void pxRotoEdit(struct Roto* roto, const vec2 m)
     } else if (mask && mask->splines.size && roto->selected_point) {
         vec2* points = mask->splines.data;
         size_t index = roto->selected_point - 1;
-        index += (index % 3 == 0) && !roto->justcreated && spxeKeyDown(Z);
+        index += (index % 3 == 0) && !roto->justcreated && spxeKeyDown(KEY_Z);
         if (roto->justcreated) {
             vec2 d = vec2_sub(m, points[index]);
             points[index + 1] = vec2_sub(points[index], d);
@@ -258,7 +238,7 @@ static void pxRotoEdit(struct Roto* roto, const vec2 m)
             points[index] = m;
             vec2_add_inline(points[index + 1], d);
             vec2_add_inline(points[index + 2], d);
-            if (spxeKeyPressed(C)) {
+            if (spxeKeyPressed(KEY_C)) {
                 vector_remove(&mask->splines, index / 3);
                 roto->selected_point = 0;
             }
@@ -267,7 +247,7 @@ static void pxRotoEdit(struct Roto* roto, const vec2 m)
         } else {
             const int couple = (index + 1) % 3 == 0 ? -1 : 1;
             const int anchor = couple == 1 ? -1 : -2;
-            if (spxeKeyPressed(C)) {
+            if (spxeKeyPressed(KEY_C)) {
                 points[index] = points[index + anchor];
                 roto->selected_point = 0;
             } else {
@@ -285,9 +265,9 @@ static void pxRotoEdit(struct Roto* roto, const vec2 m)
     }
 }
 
-static void pxRotoUpdate(struct Roto* roto, const Tex2D texture, const vec2 mouse)
+void pxRotoUpdate(struct Roto* roto, const Tex2D texture, const vec2 mouse)
 { 
-    if (spxeKeyPressed(D)) {
+    if (spxeKeyPressed(KEY_D)) {
         roto->isactive = !roto->isactive;
     }
 
@@ -299,36 +279,5 @@ static void pxRotoUpdate(struct Roto* roto, const Tex2D texture, const vec2 mous
             pxPlotRotoOverlay(roto, texture);
         }
     }
-}
-
-int main(const int argc, const char** argv)
-{
-    int width = 200, height = 150;
-    if (argc > 1) {
-        width = atoi(argv[1]);
-        height = argc > 2 ? atoi(argv[2]) : width;
-    }
-
-    struct Roto roto = pxRotoCreate();
-    Px* fb = spxeStart("bez", 800, 600, width, height);
-    Tex2D texture = {fb, width, height};
-    const size_t size = width * height * sizeof(Px);
-    ivec2 mouse;
-
-    while (spxeRun(texture.pixbuf)) {
-        spxeMousePos(&mouse.x, &mouse.y);
-        if (spxeKeyPressed(ESCAPE)) {
-            break;
-        }
-
-        memset(texture.pixbuf, 155, size);
-        pxRotoUpdate(&roto, texture, vec2_from_ivec2(mouse));
-        if (pxInside(texture, mouse.x, mouse.y)) {
-            pxPlot(texture, mouse.x, mouse.y, red);
-        }
-    }
-
-    pxRotoFree(&roto);
-    return spxeEnd(fb);
 }
 
