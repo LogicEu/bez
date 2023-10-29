@@ -29,7 +29,7 @@ int main(const int argc, const char** argv)
 
     Tex2D texture = {pixbuf, width, height};
     struct Roto roto = pxRotoCreate();
-    struct vector nodes = vector_create(sizeof(struct Node));
+    struct vector nodes = vector_create(sizeof(struct Node*));
     const size_t size = width * height * sizeof(Px);
     ivec2 mouse;
 

@@ -33,14 +33,15 @@ static ivec2 pxNodeOutpos(struct Rect r)
     return (ivec2){r.p.x, r.p.y - r.q.y};
 }
 
-static struct Node pxNodeCreate(ivec2 p)
+static struct Node* pxNodeCreate(ivec2 p)
 {
-    return (struct Node) {
-        {p, {60, 20}}, 
-        vector_create(sizeof(struct Node*)),
-        vector_create(sizeof(struct Node*)), 
-        0, 0, 0, 0, 0
-    };
+    struct Node* node = calloc(sizeof(struct Node), 1);
+    node->rect.p = p;
+    node->rect.q.x = 60;
+    node->rect.q.y = 20;
+    node->inputs = vector_create(sizeof(struct Node*));
+    node->outputs = vector_create(sizeof(struct Node*));
+    return node; 
 }
 
 static void pxNodeFree(struct Node* node)
@@ -73,7 +74,7 @@ static void pxNodeFree(struct Node* node)
 
     vector_free(&node->inputs);
     vector_free(&node->outputs);
-    memset(node, 0, sizeof(struct Node));
+    free(node);
 }
 
 static void pxNodePush(struct Node* node, struct Node* output)
@@ -149,8 +150,9 @@ static int pxNodeUpdate(
         node->rect.p.x += dif.x;
         node->rect.p.y += dif.y;
         if (spxeKeyPressed(KEY_BACKSPACE)) {
+            size_t search = vector_search(allnodes, &node);
             pxNodeFree(node);
-            vector_remove(allnodes, node - (struct Node*)allnodes->data);
+            vector_remove(allnodes, search - 1);
         }
     }
 
@@ -159,7 +161,7 @@ static int pxNodeUpdate(
 
 void pxNodesPush(struct vector* nodes, const ivec2 p)
 {
-    struct Node node = pxNodeCreate(p);
+    struct Node* node = pxNodeCreate(p);
     vector_push(nodes, &node);
 }
 
@@ -172,38 +174,40 @@ void pxNodesUpdate(
     const int pressed = spxeMousePressed(MOUSE_LEFT);
     const int down = spxeMouseDown(MOUSE_LEFT);
     const size_t count = allnodes->size;
-    struct Node* nodes = allnodes->data;
+    struct Node** nodes = allnodes->data;
     for (size_t i = 0; i < count; ++i) {
-        if (pxNodeUpdate(allnodes, nodes + i, mouse, dif, pressed, down) && !released) {
+        if (pxNodeUpdate(allnodes, nodes[i], mouse, dif, pressed, down) && !released) {
             released = i + 1;   
-        } else if (!hover && nodes[i].hover) {
+        } else if (!hover && nodes[i]->hover) {
             hover = i + 1;
         }
-        pxNodePlot(nodes + i, texture, mouse);
+        pxNodePlot(nodes[i], texture, mouse);
     }
 
     mouse_node = mouse;
     if (hover && released) {
-        pxNodePush(nodes + released - 1, nodes + hover - 1);
+        if (!vector_search(&nodes[released - 1]->outputs, nodes + hover - 1)) {
+            pxNodePush(nodes[released - 1], nodes[hover - 1]);
+        }
     }
 
     if (spxeKeyPressed(KEY_Z)) {
         pxNodesPush(allnodes, mouse);
     } else if (spxeKeyPressed(KEY_X)) {
-        struct Node* node = vector_pop(allnodes);
+        struct Node** node = vector_pop(allnodes);
         if (node) {
-            pxNodeFree(node);
+            pxNodeFree(*node);
         }
     }
 }
 
 void pxNodesFree(struct vector* nodes)
 {
-    struct Node* allnodes = nodes->data;
+    struct Node** allnodes = nodes->data;
     const size_t count = nodes->size;
     for (size_t i = 0; i < count; ++i) {
-        vector_free(&allnodes[i].inputs);
-        vector_free(&allnodes[i].outputs);
+        vector_free(&allnodes[i]->inputs);
+        vector_free(&allnodes[i]->outputs);
     }
 }
 
